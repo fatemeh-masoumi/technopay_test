@@ -2,13 +2,12 @@
 
 namespace App\Http\Controllers\Api;
 
-use Carbon\Carbon;
 use App\Models\Invoice;
 use App\Models\Payment;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use App\Services\Payment\PaymentService;
-use App\Services\Payment\WalletPaymentStrategy;
+use App\Services\Payment\PaymentStrategyFactory;
 
 class InvoiceController extends Controller
 {
@@ -19,68 +18,44 @@ class InvoiceController extends Controller
         $this->paymentService = $paymentService;
     }
 
-    public function payRequest(Request $request)
+    public function payRequest(Request $request, Invoice $invoice)
     {
         $request->validate([
-            'invoice_id' => 'required|exists:invoices,id',
+            'method' => 'required|string',
         ]);
 
-
-    
-        $invoice = Invoice::find($request->invoice_id);
-
-        if(!$invoice){
-            return response()->json(['message' => 'این فاکتور موجود نیست'], 400);
-        }
-      
         $user = $request->user();
+       
+
         if ($invoice->user_id !== $user->id) {
             return response()->json(['message' => 'این فاکتور متعلق به شما نیست'], 403);
         }
-
-        $wallet = $user->wallet;
 
         if ($user->blocked) {
             return response()->json(['message' => 'کاربر مسدود است'], 403);
         }
 
-        if (!$wallet || !$wallet->active) {
-            return response()->json(['message' => 'کیف پول فعال نیست'], 403);
-        }
+        $strategy = PaymentStrategyFactory::make($request->method);
 
-        $todaySpent = $user->payments()
-            ->where('method', 'wallet')
-            ->where('status', 'paid')
-            ->whereDate('paid_at', now())
-            ->sum('amount');
+        $payment = $this->paymentService->createPaymentWithOtp($invoice, $strategy);
 
-        if (($todaySpent + $invoice->amount) > WalletPaymentStrategy::DAILY_LIMIT) {
-            return response()->json(['message' => 'محدودیت روزانه پرداخت شده است'], 400);
-        }
-
-        $payment = $this->paymentService->createPaymentWithOtp($invoice);
 
         return response()->json([
+            'payment_id' => $payment->id,
             'message' => 'کد تایید برای شما ارسال شد',
-            'otp' => $payment->otp_code, // فقط برای تست
-            'payment_id' => $payment->id
+            'otp_code' => $payment->otp_code, // فقط برای تست
+            'confirm_url' => route('payments.confirm', $payment->id),
         ]);
     }
 
-
-    /**
-     * تایید پرداخت
-     */
-    public function confirm(Request $request)
+    public function confirm(Request $request, Payment $payment)
     {
-        $request->validate([
-            'payment_id' => 'required|exists:payments,id',
-            'otp_code' => 'required',
-        ]);
+        $request->validate(['otp_code' => 'required']);
 
-        $payment = Payment::find($request->payment_id);
+     
+        $strategy = PaymentStrategyFactory::make($payment->method);
 
-        $success = $this->paymentService->confirmPayment($payment, $request->otp_code);
+        $success = $this->paymentService->confirmPayment($payment, $request->otp_code, $strategy);
 
         if (!$success) {
             return response()->json(['message' => 'پرداخت ناموفق یا OTP اشتباه/منقضی شده است'], 400);
@@ -89,7 +64,7 @@ class InvoiceController extends Controller
         return response()->json([
             'message' => 'پرداخت با موفقیت انجام شد',
             'invoice' => $payment->payable,
-            'payment' => $payment
+            'payment' => $payment,
         ]);
     }
 }

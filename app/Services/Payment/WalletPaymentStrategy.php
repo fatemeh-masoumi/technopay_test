@@ -2,42 +2,53 @@
 
 namespace App\Services\Payment;
 
-use Carbon\Carbon;
 use App\Models\Invoice;
+use App\Models\Payment;
 use Illuminate\Support\Facades\DB;
 
-
-class WalletPaymentStrategy implements PaymentStrategy
+class WalletPaymentStrategy implements PaymentStrategyInterface 
 {
     const DAILY_LIMIT = 1000000; 
 
-    public function pay(Invoice $invoice): bool
+    public function pay(Payment $payment)
     {
-        $wallet = $invoice->user->wallet;
+        $wallet = $payment->user->wallet;
 
-        // بررسی موجودی و محدودیت روزانه
-        if (!$wallet || !$wallet->active || $wallet->balance < $invoice->amount) {
+        if (!$wallet || !$wallet->is_active || $wallet->balance < $payment->amount) {
             return false;
         }
 
-        $todaySpent = Invoice::where('status', 'paid')
-            ->whereDate('paid_at', Carbon::today())
+        $todaySpent = $payment->user->payments()
+            ->where('status', 'paid')
+            ->whereDate('paid_at', now())
             ->sum('amount');
 
-        if (($todaySpent + $invoice->amount) > self::DAILY_LIMIT) {
+        if (($todaySpent + $payment->amount) > self::DAILY_LIMIT) {
             return false;
         }
 
-        DB::transaction(function () use ($invoice, $wallet) {
-            $wallet->balance -= $invoice->amount;
+        DB::transaction(function () use ($payment, $wallet) {
+            $wallet->balance -= $payment->amount;
             $wallet->save();
 
-            $invoice->update([
+            $payment->payable->update([
                 'status' => 'paid',
-                'paid_at' => Carbon::now(),
+                'paid_at' => now(),
             ]);
+
+            $payment->update(['status' => 'paid']);
         });
 
         return true;
+    }
+
+    public function getName(): string
+    {
+        return 'wallet';
+    }
+
+    public function getDailyLimit(): float
+    {
+        return self::DAILY_LIMIT;
     }
 }

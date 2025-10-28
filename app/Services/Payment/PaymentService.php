@@ -9,35 +9,29 @@ use Illuminate\Support\Facades\DB;
 
 class PaymentService
 {
-    /**
-     * ایجاد Payment جدید با OTP
-     */
-    public function createPaymentWithOtp(Invoice $invoice): Payment
+    public function createPaymentWithOtp(Invoice $invoice, PaymentStrategyInterface $strategy): Payment
     {
-        $otp = rand(100000, 999999);
-
-        return $invoice->payments()->create([
-            'user_id' => $invoice->user->id,
+        return Payment::create([
+            'payable_type' => Invoice::class,
+            'payable_id' => $invoice->id,
+            'user_id' => $invoice->user_id,
             'amount' => $invoice->amount,
-            'method' => 'wallet',
             'status' => 'pending',
-            'otp_code' => $otp,
-            'otp_expires_at' => Carbon::now()->addMinutes(5),
+            'method' => $strategy->getName(),
+            'otp_code' => rand(100000, 999999),
+            'otp_expires_at' => now()->addMinutes(5),
         ]);
     }
 
-  
-    public function confirmPayment(Payment $payment, string $otp): bool
+    public function confirmPayment(Payment $payment, string $otp, PaymentStrategyInterface $strategy): bool
     {
         if ($payment->otp_code !== $otp || Carbon::now()->greaterThan($payment->otp_expires_at)) {
             return false;
         }
-
-        $context = new PaymentContext(new WalletPaymentStrategy());
-
-        // تراکنش امن
-        return DB::transaction(function () use ($context, $payment) {
-            return $context->pay($payment);
+    
+        return DB::transaction(function () use ($payment, $strategy) {
+            return $strategy->pay($payment);
         });
     }
 }
+
